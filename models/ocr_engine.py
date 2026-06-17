@@ -1,15 +1,9 @@
 import os
 import logging
+from PIL import Image
 
-# PaddleX reads PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT at import time to decide
-# whether to default run_mode to "mkldnn" for CPU inference. When "mkldnn" is
-# the run_mode, PaddleX calls config.enable_mkldnn() on the paddle inference
-# Config, which activates oneDNN ops. Those ops are compiled into PIR, and
-# PaddlePaddle 3.x PIR crashes with:
-#   NotImplementedError: ConvertPirAttribute2RuntimeAttribute not support
-#   [pir::ArrayAttribute<pir::DoubleAttribute>]
-# Setting this to "0" forces run_mode="paddle" (plain CPU, no oneDNN).
-# Must be set before paddleocr / paddlex is imported.
+# Must be set before paddleocr/paddlex is imported — disables oneDNN which
+# crashes PaddlePaddle 3.x with ConvertPirAttribute2RuntimeAttribute error.
 os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
 
 from paddleocr import PaddleOCR
@@ -22,57 +16,43 @@ for _name in ("ppocr", "paddleocr", "paddlex"):
 class OCREngine:
     """PaddleOCR-based text extractor for medical document images.
 
-    Handles rotated/tilted text via textline orientation classification.
-    The OCR engine is initialized once and reused for every extract_text() call.
+    Single PaddleOCR instance shared across two public methods:
+      - extract_text()     → raw text + metadata (used by BioBERT pipeline)
+      - extract_ocr_data() → (words, boxes) normalized 0-1000 (used by LayoutLMv3)
     """
 
     def __init__(self):
-        """Initialize PaddleOCR with textline orientation classification.
+        self.ocr = PaddleOCR(use_textline_orientation=True, lang='en', device='gpu:0')
 
-        PaddleOCR 3.x renamed use_angle_cls → use_textline_orientation and
-        removed show_log / use_gpu from the constructor.
-        """
-        self.ocr = PaddleOCR(
-            use_textline_orientation=True,
-            lang='en'
-        )
-
-    def extract_text(self, image_path):
-        """Extract text from an image file, sorted top-to-bottom by position.
-
-        Returns a dict with:
-          raw_text       – all text joined by spaces
-          lines          – list of {text, confidence} dicts (confidence 0–1)
-          avg_confidence – mean line confidence as a percentage
-          word_count     – total word count of raw_text
-
-        PaddleOCR 3.x returns OCRResult objects with parallel lists
-        (rec_texts, rec_scores, dt_polys) rather than the 2.x
-        [[[coords], ('text', conf)], ...] format.
-        """
+    def _run_predict(self, image_path):
+        """Run PaddleOCR once and return (texts, scores, polys, width, height)."""
         validated_path = load_image_for_ocr(image_path)
-        result = list(self.ocr.predict(validated_path))
+        img = Image.open(validated_path)
+        width, height = img.size
 
+        result = list(self.ocr.predict(validated_path))
         if not result:
-            return {
-                "raw_text": "",
-                "lines": [],
-                "avg_confidence": 0.0,
-                "word_count": 0
-            }
+            return [], [], [], width, height
 
         page = result[0]
         texts = page.get("rec_texts") or []
         scores = page.get("rec_scores") or []
         polys = page.get("dt_polys") or []
+        return texts, scores, polys, width, height
+
+    def extract_text(self, image_path):
+        """Extract text for the BioBERT pipeline.
+
+        Returns a dict with:
+          raw_text       – all text joined by spaces
+          lines          – list of {text, confidence} dicts
+          avg_confidence – mean line confidence as a percentage
+          word_count     – total word count of raw_text
+        """
+        texts, scores, polys, _, _ = self._run_predict(image_path)
 
         if not texts:
-            return {
-                "raw_text": "",
-                "lines": [],
-                "avg_confidence": 0.0,
-                "word_count": 0
-            }
+            return {"raw_text": "", "lines": [], "avg_confidence": 0.0, "word_count": 0}
 
         lines_data = []
         for text, score, poly in zip(texts, scores, polys):
@@ -82,15 +62,11 @@ class OCREngine:
             lines_data.append({
                 "text": str(text),
                 "confidence": round(float(score), 4),
-                "y_coord": y_coord
+                "y_coord": y_coord,
             })
 
         lines_data.sort(key=lambda x: x["y_coord"])
-
-        lines_output = [
-            {"text": l["text"], "confidence": l["confidence"]}
-            for l in lines_data
-        ]
+        lines_output = [{"text": l["text"], "confidence": l["confidence"]} for l in lines_data]
         raw_text = " ".join(l["text"] for l in lines_data)
         avg_confidence = (
             sum(l["confidence"] for l in lines_data) / len(lines_data) * 100
@@ -101,5 +77,35 @@ class OCREngine:
             "raw_text": raw_text,
             "lines": lines_output,
             "avg_confidence": round(avg_confidence, 2),
-            "word_count": len(raw_text.split())
+            "word_count": len(raw_text.split()),
         }
+
+    def extract_ocr_data(self, image_path):
+        """Extract words and bounding boxes for LayoutLMv3.
+
+        Returns (words, boxes) where boxes are normalized to 0-1000.
+        Falls back to [("", [0,0,0,0])] when OCR finds nothing.
+        """
+        texts, scores, polys, width, height = self._run_predict(image_path)
+        words, boxes = [], []
+
+        for text, poly in zip(texts, polys):
+            if not text or poly is None:
+                continue
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+
+            x0_n = max(0, min(1000, int(x0 * 1000 / width)))
+            y0_n = max(0, min(1000, int(y0 * 1000 / height)))
+            x1_n = max(0, min(1000, int(x1 * 1000 / width)))
+            y1_n = max(0, min(1000, int(y1 * 1000 / height)))
+
+            words.append(str(text))
+            boxes.append([x0_n, y0_n, x1_n, y1_n])
+
+        if not words:
+            words = [""]
+            boxes = [[0, 0, 0, 0]]
+
+        return words, boxes
