@@ -61,13 +61,16 @@ class KeywordValidator:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def validate(self, image_path, lmv3_prediction, lmv3_confidence):
+    def validate(self, image_path, lmv3_prediction, lmv3_confidence, words=None):
         """Confirm or override an LMv3 prediction using keyword evidence.
 
         Args:
             image_path       : path to the image file
             lmv3_prediction  : class predicted by LayoutLMv3
             lmv3_confidence  : confidence % from LayoutLMv3
+            words            : pre-extracted OCR words, if the caller already
+                                ran OCR (e.g. DocumentClassifier). Skips the
+                                cache/live-OCR lookup when provided.
 
         Returns a dict:
             final_prediction – confirmed or overridden class name
@@ -76,7 +79,8 @@ class KeywordValidator:
             scores           – keyword match score per class (0-1)
             confidence       – original LMv3 confidence
         """
-        words      = self._get_words(image_path)
+        if words is None:
+            words = self._get_words(image_path)
         text_lower = " ".join(str(w).lower() for w in words)
         scores     = {cls: round(self._score(text_lower, cls), 4)
                       for cls in self._classes}

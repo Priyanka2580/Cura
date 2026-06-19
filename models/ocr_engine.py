@@ -1,6 +1,5 @@
 import os
 import logging
-from PIL import Image
 
 # Must be set before paddleocr/paddlex is imported — disables oneDNN which
 # crashes PaddlePaddle 3.x with ConvertPirAttribute2RuntimeAttribute error.
@@ -16,21 +15,26 @@ for _name in ("ppocr", "paddleocr", "paddlex"):
 class OCREngine:
     """PaddleOCR-based text extractor for medical document images.
 
-    Single PaddleOCR instance shared across two public methods:
-      - extract_text()     → raw text + metadata (used by BioBERT pipeline)
-      - extract_ocr_data() → (words, boxes) normalized 0-1000 (used by LayoutLMv3)
+    Single PaddleOCR instance. Use extract_all() to get every downstream
+    output (words/boxes for LayoutLMv3, raw_text for KeywordValidator and
+    BioBERT NER) from one OCR pass. extract_text() and extract_ocr_data()
+    remain as convenience wrappers for single-output callers.
     """
 
     def __init__(self):
         self.ocr = PaddleOCR(use_textline_orientation=True, lang='en', device='gpu:0')
 
     def _run_predict(self, image_path):
-        """Run PaddleOCR once and return (texts, scores, polys, width, height)."""
-        validated_path = load_image_for_ocr(image_path)
-        img = Image.open(validated_path)
-        width, height = img.size
+        """Run PaddleOCR once and return (texts, scores, polys, width, height).
 
-        result = list(self.ocr.predict(validated_path))
+        load_image_for_ocr() decodes the image itself (instead of handing
+        PaddleOCR a path) so unsupported formats, oversized files, sideways
+        EXIF orientation, and blurry photos are caught before OCR runs.
+        """
+        image_array = load_image_for_ocr(image_path)
+        height, width = image_array.shape[:2]
+
+        result = list(self.ocr.predict(image_array))
         if not result:
             return [], [], [], width, height
 
@@ -40,19 +44,43 @@ class OCREngine:
         polys = page.get("dt_polys") or []
         return texts, scores, polys, width, height
 
-    def extract_text(self, image_path):
-        """Extract text for the BioBERT pipeline.
+    def extract_all(self, image_path):
+        """Run PaddleOCR once and return everything needed by every downstream
+        consumer — LayoutLMv3 classifier, KeywordValidator, and BioBERT NER —
+        so a single image never triggers more than one OCR pass.
 
         Returns a dict with:
-          raw_text       – all text joined by spaces
-          lines          – list of {text, confidence} dicts
+          words          – word list in original detection order (LayoutLMv3 input)
+          boxes          – matching boxes normalized 0-1000 (LayoutLMv3 input)
+          raw_text       – all text joined by spaces, y-sorted (NER / validator input)
+          lines          – list of {text, confidence} dicts, y-sorted
           avg_confidence – mean line confidence as a percentage
           word_count     – total word count of raw_text
         """
-        texts, scores, polys, _, _ = self._run_predict(image_path)
+        texts, scores, polys, width, height = self._run_predict(image_path)
 
-        if not texts:
-            return {"raw_text": "", "lines": [], "avg_confidence": 0.0, "word_count": 0}
+        words, boxes = [], []
+        for text, poly in zip(texts, polys):
+            if not text or poly is None:
+                continue
+            # poly coordinates come back as numpy.int16 — cast to plain int
+            # before scaling by 1000, otherwise x0 * 1000 silently overflows
+            # the 16-bit range and corrupts the box.
+            xs = [int(p[0]) for p in poly]
+            ys = [int(p[1]) for p in poly]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+
+            words.append(str(text))
+            boxes.append([
+                max(0, min(1000, int(x0 * 1000 / width))),
+                max(0, min(1000, int(y0 * 1000 / height))),
+                max(0, min(1000, int(x1 * 1000 / width))),
+                max(0, min(1000, int(y1 * 1000 / height))),
+            ])
+
+        if not words:
+            words = [""]
+            boxes = [[0, 0, 0, 0]]
 
         lines_data = []
         for text, score, poly in zip(texts, scores, polys):
@@ -74,10 +102,29 @@ class OCREngine:
         )
 
         return {
+            "words": words,
+            "boxes": boxes,
             "raw_text": raw_text,
             "lines": lines_output,
             "avg_confidence": round(avg_confidence, 2),
             "word_count": len(raw_text.split()),
+        }
+
+    def extract_text(self, image_path):
+        """Extract text for the BioBERT pipeline.
+
+        Returns a dict with:
+          raw_text       – all text joined by spaces
+          lines          – list of {text, confidence} dicts
+          avg_confidence – mean line confidence as a percentage
+          word_count     – total word count of raw_text
+        """
+        data = self.extract_all(image_path)
+        return {
+            "raw_text": data["raw_text"],
+            "lines": data["lines"],
+            "avg_confidence": data["avg_confidence"],
+            "word_count": data["word_count"],
         }
 
     def extract_ocr_data(self, image_path):
@@ -86,26 +133,10 @@ class OCREngine:
         Returns (words, boxes) where boxes are normalized to 0-1000.
         Falls back to [("", [0,0,0,0])] when OCR finds nothing.
         """
-        texts, scores, polys, width, height = self._run_predict(image_path)
-        words, boxes = [], []
+        data = self.extract_all(image_path)
+        return data["words"], data["boxes"]
 
-        for text, poly in zip(texts, polys):
-            if not text or poly is None:
-                continue
-            xs = [p[0] for p in poly]
-            ys = [p[1] for p in poly]
-            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
-
-            x0_n = max(0, min(1000, int(x0 * 1000 / width)))
-            y0_n = max(0, min(1000, int(y0 * 1000 / height)))
-            x1_n = max(0, min(1000, int(x1 * 1000 / width)))
-            y1_n = max(0, min(1000, int(y1 * 1000 / height)))
-
-            words.append(str(text))
-            boxes.append([x0_n, y0_n, x1_n, y1_n])
-
-        if not words:
-            words = [""]
-            boxes = [[0, 0, 0, 0]]
-
-        return words, boxes
+    def is_low_quality(self, avg_confidence, word_count):
+        """True when an OCR result looks unreliable enough that the caller
+        should ask the user for a clearer photo instead of trusting it."""
+        return avg_confidence < 60 and word_count < 20

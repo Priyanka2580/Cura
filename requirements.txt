@@ -8,6 +8,7 @@ seqeval
 rouge-score
 streamlit
 Pillow
+pillow-heif
 pandas
 numpy
 python-dotenv

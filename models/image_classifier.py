@@ -67,13 +67,17 @@ class DocumentClassifier:
                         keyword validation to confirm or override the LMv3 result
 
         Returns a dict with:
-          doc_type          – final predicted class name
-          confidence        – LMv3 confidence %
-          all_probabilities – per-class probabilities as percentages
-          validation        – keyword validation details (if validate=True)
+          doc_type           – final predicted class name
+          confidence         – LMv3 confidence %
+          all_probabilities  – per-class probabilities as percentages
+          validation         – keyword validation details (if validate=True)
+          raw_text           – OCR text, ready for NER reuse with no extra OCR call
+          ocr_word_count     – word count of raw_text
+          ocr_avg_confidence – mean OCR line confidence as a percentage
         """
         image = Image.open(image_path).convert("RGB")
-        words, boxes = self.ocr_engine.extract_ocr_data(image_path)
+        ocr_data = self.ocr_engine.extract_all(image_path)
+        words, boxes = ocr_data["words"], ocr_data["boxes"]
 
         encoding = self.processor(
             images=image,
@@ -107,10 +111,13 @@ class DocumentClassifier:
                 for i, name in enumerate(self.class_names)
             },
             "validation": None,
+            "raw_text": ocr_data["raw_text"],
+            "ocr_word_count": ocr_data["word_count"],
+            "ocr_avg_confidence": ocr_data["avg_confidence"],
         }
 
         if validate and self.validator is not None:
-            val = self.validator.validate(image_path, lmv3_class, lmv3_conf)
+            val = self.validator.validate(image_path, lmv3_class, lmv3_conf, words=words)
             result["doc_type"]   = val["final_prediction"]
             result["validation"] = val
 
