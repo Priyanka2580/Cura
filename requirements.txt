@@ -3,7 +3,7 @@ torchvision
 transformers
 paddleocr
 paddlepaddle
-google-generativeai
+google-genai
 seqeval
 rouge-score
 streamlit
