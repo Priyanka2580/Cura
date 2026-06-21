@@ -1,0 +1,29 @@
+[
+  {
+    "image": "001img.jpg",
+    "status": "success",
+    "doc_type": "prescription",
+    "classifier_confidence": 99.55,
+    "ocr_confidence": 99.0,
+    "raw_text": "manipalhospitals LIFE'S ON URN:MH008417321 Manipal Hospital Yeshwanthpur Brigade Gateway, #26/4,80 Feet, Dr. Rajkumar Road, Malleshwaram West, Bengaluru-560 055,Karnataka P+91 080 6165 6262|+91 88844 60440 OUTPATIENT RECORD Visit No: O17000036956 MH008417321 Age/Sex: 2 Yrs/Male Hospital No: AYANSH SAHA Specialty: PAEDIATRICS MYB Name: DR. SUPRAJA CHANDRASEKAR Doctor Name: 27/12/2022 01:20PM Temperature: 97.5°F Date: Saturation(Oxygen): 99% BMI: 16.27 Pulse Rate: 94beats per minute Weight: 14.68kg Vulnerable: 01 Height: 95cm Fall Risk: 01 Pain Score: 00 Ideal Body Weight (calculated): 0.00kg OPD Notes : 2.5 years Came for general check Wt 14.8 Kg Ht 95 cm > 50th C Concern about growth by mother explained normal Discussed diet O/E mild pallor Systemic normal Advice Syp Zentel 10ml after dinner one dose and repeat dose after 15 days Syp Tonoferon Paed [80] 2.5ml 1 hr before food for 2 months Flu vaccine given Discussed growth targets DR. SUPRAJA CHANDRASEKAR \"MBBS-2002, MRCPCH(UK)2006, Fellowship in Pediatric Critical Care (IAP)-2009\" 1 of 1 nipal Health Enterprises Pvt. Ltd. U85110KA2010PTC052540 1 80 4936 0300 E info@manipalhospitals.com www.manipalhospitals.com",
+    "summary": "Document Type: Outpatient Record, Hospital/Clinic Name: Manipal Hospital Yeshwanthpur, Address: Brigade Gateway, #26/4,80 Feet, Dr. Rajkumar Road, Malleshwaram West, Bengaluru-560 055, Karnataka, Contact: P+91 080 6165 6262 and +91 88844 60440, Email: info@manipalhospitals.com, Website: www.manipalhospitals.com, Doctor Name: DR. SUPRAJA CHANDRASEKAR, Qualifications: MBBS-2002, MRCPCH(UK)2006, Fellowship in Pediatric Critical Care (IAP)-2009, Doctor Registration Number: Not specified in text, Patient Name: AYANSH SAHA, Age/Sex: 2 Yrs/Male, Date: 27/12/2022 01:20PM, Presenting Concerns/Observations: Patient presented for a general check-up. Mother expressed concern about growth, which was explained to be normal. On examination, mild pallor was noted, and systemic examination was normal. Vital signs and measurements recorded were: Temperature: 97.5°F, Saturation(Oxygen): 99%, BMI: 16.27, Pulse Rate: 94 beats per minute, Weight: 14.68kg, Height: 95cm, Vulnerable: 01, Fall Risk: 01, Pain Score: 00, Ideal Body Weight (calculated): 0.00kg, Medications: 1) Syp Zentel, 10ml, Syrup, one dose, repeat dose after 15 days, after dinner; 2) Syp Tonoferon Paed [80], 2.5ml, Syrup, frequency not specified (implied daily), for 2 months, 1 hr before food; 3) Flu vaccine, administered during visit, Advice/Instructions: Diet was discussed, growth targets were discussed.",
+    "low_quality": false
+  },
+  {
+    "image": "003img.jpg",
+    "status": "failed",
+    "message": "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}",
+    "doc_type": "report",
+    "classifier_confidence": 99.89,
+    "ocr_confidence": 98.91,
+    "low_quality": false
+  },
+  {
+    "image": "006img.png",
+    "status": "rejected",
+    "message": "Please upload a valid medical document",
+    "doc_type": "non_medical",
+    "classifier_confidence": 99.91,
+    "low_quality": false
+  }
+]

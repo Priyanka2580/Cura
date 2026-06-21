@@ -23,8 +23,7 @@ GEMINI_MODEL_NAME = "gemini-2.5-flash"
 # and letting the caller move on to the next image.
 REQUEST_TIMEOUT_MS = 60_000
 
-# Placeholder prompt -- will be revised later.
-PRESCRIPTION_PROMPT = """You are a medical assistant explaining a prescription to a patient in plain, simple language.
+PRESCRIPTION_PROMPT = """You are a medical assistant explaining a prescription to a patient in simple, friendly language that anyone can understand.
 
 Raw text extracted from the prescription image via OCR (may contain minor OCR errors):
 ---
@@ -34,17 +33,36 @@ Raw text extracted from the prescription image via OCR (may contain minor OCR er
 Structured entities already pulled out by a medical NER model -- trust these over the raw text above for drug names, dosages, strengths, frequency, route and duration:
 {entities_block}
 
-Write a clear, patient-friendly summary that:
-1. Mentions the doctor's name and the patient's name/details and date if available
-2. Lists each medicine with its dosage, strength, frequency, route and duration if available
-3. Explains in simple terms what each medicine is generally used for
-4. Notes any special instructions
-5. Uses short sentences and avoids medical jargon
+Generate a response in valid JSON format only, with this exact structure:
 
-If information is missing or unclear, say so plainly instead of guessing."""
+{{
+  "patient_summary": "2-3 sentence plain-language overview: doctor name, patient name/details, date, and what condition is being treated, if available",
+  "medicines": [
+    {{
+      "name": "medicine name",
+      "dosage": "e.g. 650mg",
+      "frequency": "e.g. twice daily",
+      "duration": "e.g. 5 days",
+      "usage": "what this medicine is generally used for, in simple terms",
+      "common_side_effects": "2-3 most common side effects, plain language",
+      "alternatives": "1-2 commonly known alternative medicines if widely known, else 'Consult your doctor'"
+    }}
+  ],
+  "do_list": ["short actionable point", "short actionable point"],
+  "dont_list": ["short actionable point", "short actionable point"],
+  "lifestyle_tips": ["water intake / diet / rest related tip", "another tip if relevant"],
+  "missing_info_note": "state plainly if any critical info like dosage or duration was missing or unclear, else null"
+}}
 
-# Placeholder prompt -- will be revised later.
-REPORT_PROMPT = """You are a medical assistant explaining a lab/diagnostic report to a patient in plain, simple language.
+Rules:
+- Keep "patient_summary" short -- 2-3 sentences only
+- "medicines" must have one entry per distinct medicine found
+- "do_list" and "dont_list" should have 2-4 short points each, specific to the prescribed medicines/condition, not generic filler
+- "lifestyle_tips" should have 1-3 points only, relevant to the medicines/condition (e.g. hydration, food timing)
+- Do not invent information not supported by the text or general medical knowledge of the named medicine -- if unsure about a specific field, write "Not specified" rather than guessing
+- Do not include any text outside the JSON object -- no markdown, no explanation, just valid JSON"""
+
+REPORT_PROMPT = """You are a medical assistant explaining a lab/diagnostic report to a patient in simple, friendly language that anyone can understand.
 
 Raw text extracted from the report image via OCR (may contain minor OCR errors):
 ---
@@ -54,18 +72,39 @@ Raw text extracted from the report image via OCR (may contain minor OCR errors):
 Structured entities already pulled out by a medical NER model -- trust these over the raw text above for test names, values, units and reference ranges:
 {entities_block}
 
-Abnormality check already computed by a rule-based detector that compared each value against its reference range -- trust this over your own judgement for which values are abnormal and how severe:
+Abnormality check already computed by a rule-based detector that compared each value against its reference range -- trust this completely for which values are LOW/HIGH/NORMAL and their severity:
 {abnormality_block}
 
-Write a clear, patient-friendly summary that:
-1. Mentions the patient's name/details if available
-2. Lists each test with its value, unit, and reference range if available
-3. Clearly states which values are LOW or HIGH and their severity, in plain terms
-4. Gives an overall plain-language takeaway of what the report shows
-5. If any value is SEVERE, suggests what type of specialist the patient may want to consult
-6. Avoids medical jargon
+Generate a response in valid JSON format only, with this exact structure:
 
-If information is missing or unclear, say so plainly instead of guessing."""
+{{
+  "patient_summary": "2-3 sentence plain-language overview: patient name/details and date if available, and an overall takeaway of what this report shows",
+  "test_results": [
+    {{
+      "test_name": "test name",
+      "value": "value with unit",
+      "reference_range": "range as given",
+      "status": "NORMAL or LOW or HIGH",
+      "severity": "MILD, MODERATE, SEVERE, or null if NORMAL",
+      "meaning": "1 simple sentence on what this specific result means for the patient"
+    }}
+  ],
+  "overall_condition": "1-2 sentence plain-language statement of the patient's general health picture based on these results",
+  "specialist_suggestion": "type of doctor/specialist to consult if any result is SEVERE or multiple are abnormal, else 'No specialist visit indicated based on these results, routine follow-up as advised by your doctor'",
+  "do_list": ["short actionable point relevant to the abnormal results", "short actionable point"],
+  "dont_list": ["short actionable point", "short actionable point"],
+  "lifestyle_tips": ["diet / water / rest related tip relevant to abnormal results", "another tip if relevant"],
+  "missing_info_note": "state plainly if any test was missing data or could not be parsed, else null"
+}}
+
+Rules:
+- Keep "patient_summary" short -- 2-3 sentences only
+- "test_results" must have one entry per test, using the abnormality detector's status and severity exactly as given -- do not recalculate or override them
+- "do_list" and "dont_list" should have 2-4 short points each, specific to the abnormal results found, not generic filler
+- "lifestyle_tips" should have 1-3 points only, relevant to the specific abnormalities (e.g. low hemoglobin -> iron-rich food tip)
+- If all results are NORMAL, keep do/dont/lifestyle lists short and general wellness-focused
+- Do not invent information not supported by the text, entities, or abnormality data -- if unsure, write "Not specified"
+- Do not include any text outside the JSON object -- no markdown, no explanation, just valid JSON"""
 
 PROMPTS_BY_DOC_TYPE = {
     "prescription": PRESCRIPTION_PROMPT,

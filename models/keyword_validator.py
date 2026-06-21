@@ -111,6 +111,18 @@ class KeywordValidator:
                 final_prediction = best
                 overridden       = True
 
+        # Zero-evidence safety net: a real prescription/report always matches at least
+        # one weak keyword (e.g. "mg", "tablet", "test"). If LMv3 landed on a medical
+        # class but the OCR text matches NEITHER medical keyword list at all, there is
+        # no textual evidence this is a medical document (e.g. a selfie or screenshot
+        # LMv3 confidently but wrongly classified as a report). The override loop above
+        # can't reach this case since it deliberately excludes non_medical as a candidate.
+        if final_prediction in ("prescription", "report"):
+            medical_scores = {c: s for c, s in scores.items() if c != "non_medical"}
+            if all(s == 0.0 for s in medical_scores.values()):
+                final_prediction = "non_medical"
+                overridden       = True
+
         return {
             "final_prediction": final_prediction,
             "lmv3_prediction":  lmv3_prediction,
