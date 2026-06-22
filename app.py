@@ -733,6 +733,10 @@ def render_prescription_summary(data):
     if data.get("patient_summary"):
         st.markdown(data["patient_summary"])
 
+    if data.get("diagnosis_explained"):
+        st.markdown('<div class="cura-summary-section-title">About the diagnosis</div>', unsafe_allow_html=True)
+        st.write(data["diagnosis_explained"])
+
     medicines = data.get("medicines") or []
     if medicines:
         st.markdown('<div class="cura-summary-section-title">Medicines</div>', unsafe_allow_html=True)
@@ -764,6 +768,10 @@ def render_prescription_summary(data):
 def render_report_summary(data):
     if data.get("patient_summary"):
         st.markdown(data["patient_summary"])
+
+    if data.get("likely_condition"):
+        st.markdown('<div class="cura-summary-section-title">Likely condition</div>', unsafe_allow_html=True)
+        st.write(data["likely_condition"])
 
     test_results = data.get("test_results") or []
     if test_results:

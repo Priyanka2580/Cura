@@ -36,7 +36,8 @@ Structured entities already pulled out by a medical NER model -- trust these ove
 Generate a response in valid JSON format only, with this exact structure:
 
 {{
-  "patient_summary": "2-3 sentence plain-language overview: doctor name, patient name/details, date, and what condition is being treated, if available",
+  "patient_summary": "2-3 sentence plain-language overview: doctor name, patient name/details, date, and the diagnosis/condition being treated if available -- name the condition explicitly here",
+  "diagnosis_explained": "1-2 sentences explaining what the diagnosed condition is, in simple terms a non-medical person would understand, or null if no diagnosis is mentioned",
   "medicines": [
     {{
       "name": "medicine name",
@@ -48,18 +49,24 @@ Generate a response in valid JSON format only, with this exact structure:
       "alternatives": "1-2 commonly known alternative medicines if widely known, else 'Consult your doctor'"
     }}
   ],
-  "do_list": ["short actionable point", "short actionable point"],
-  "dont_list": ["short actionable point", "short actionable point"],
-  "lifestyle_tips": ["water intake / diet / rest related tip", "another tip if relevant"],
+  "do_list": ["actionable care point NOT already stated in the medicines table -- e.g. specific foods to eat, timing habits, hydration, rest, hygiene related to this condition/medicine class"],
+  "dont_list": ["actionable restriction NOT already stated in the medicines table -- e.g. foods/drinks/activities to avoid, interactions to watch for, habits that worsen this condition"],
+  "lifestyle_tips": ["broader lifestyle guidance specific to the diagnosed condition or medicine class -- e.g. exercise, sleep, diet pattern -- NOT a repeat of dosage/timing instructions"],
   "missing_info_note": "state plainly if any critical info like dosage or duration was missing or unclear, else null"
 }}
 
-Rules:
+CRITICAL RULES ON REPETITION:
+- Do NOT repeat dosage, frequency, timing, or duration instructions in "do_list", "dont_list", or "lifestyle_tips" -- that information belongs ONLY in the "medicines" table
+- "do_list", "dont_list", and "lifestyle_tips" must contain NEW information not found anywhere else in the JSON -- think of them as general health/diet/activity guidance related to the condition or medicine class, not medicine-taking instructions
+- Example of what NOT to do: "Don't forget to give the second dose" (this is a timing instruction, belongs in medicines table, not here)
+- Example of what TO do: "Avoid giving iron supplements with tea or milk, as it reduces absorption" (this is new actionable knowledge)
+
+OTHER RULES:
 - Keep "patient_summary" short -- 2-3 sentences only
 - "medicines" must have one entry per distinct medicine found
-- "do_list" and "dont_list" should have 2-4 short points each, specific to the prescribed medicines/condition, not generic filler
-- "lifestyle_tips" should have 1-3 points only, relevant to the medicines/condition (e.g. hydration, food timing)
-- Do not invent information not supported by the text or general medical knowledge of the named medicine -- if unsure about a specific field, write "Not specified" rather than guessing
+- "do_list" and "dont_list" should have 2-4 points each, specific to the diagnosed condition and medicine class -- not generic filler
+- "lifestyle_tips" should have 1-3 points only
+- Do not invent information not supported by the text or general medical knowledge of the named medicine/condition -- if unsure, write "Not specified"
 - Do not include any text outside the JSON object -- no markdown, no explanation, just valid JSON"""
 
 REPORT_PROMPT = """You are a medical assistant explaining a lab/diagnostic report to a patient in simple, friendly language that anyone can understand.
@@ -79,6 +86,7 @@ Generate a response in valid JSON format only, with this exact structure:
 
 {{
   "patient_summary": "2-3 sentence plain-language overview: patient name/details and date if available, and an overall takeaway of what this report shows",
+  "likely_condition": "1-2 sentences naming what condition or issue the abnormal results may indicate (e.g. 'low hemoglobin suggests possible anemia'), in plain language, or 'No significant issues detected' if all values are normal",
   "test_results": [
     {{
       "test_name": "test name",
@@ -91,18 +99,24 @@ Generate a response in valid JSON format only, with this exact structure:
   ],
   "overall_condition": "1-2 sentence plain-language statement of the patient's general health picture based on these results",
   "specialist_suggestion": "type of doctor/specialist to consult if any result is SEVERE or multiple are abnormal, else 'No specialist visit indicated based on these results, routine follow-up as advised by your doctor'",
-  "do_list": ["short actionable point relevant to the abnormal results", "short actionable point"],
-  "dont_list": ["short actionable point", "short actionable point"],
-  "lifestyle_tips": ["diet / water / rest related tip relevant to abnormal results", "another tip if relevant"],
+  "do_list": ["actionable care point related to managing/improving the abnormal result(s) -- e.g. specific foods to eat, habits that help -- NOT a repeat of the test_results table"],
+  "dont_list": ["actionable restriction related to the abnormal result(s) -- e.g. foods/habits to avoid that worsen this condition -- NOT a repeat of the test_results table"],
+  "lifestyle_tips": ["broader lifestyle guidance specific to the likely condition -- e.g. diet pattern, exercise, hydration, sleep -- NOT a repeat of test values or status already shown"],
   "missing_info_note": "state plainly if any test was missing data or could not be parsed, else null"
 }}
 
-Rules:
+CRITICAL RULES ON REPETITION:
+- Do NOT repeat test values, statuses, or severities in "do_list", "dont_list", or "lifestyle_tips" -- that information belongs ONLY in the "test_results" table
+- "do_list", "dont_list", and "lifestyle_tips" must contain NEW information -- think of them as condition-specific diet/habit/exercise guidance, not a restatement of which values are high or low
+- Example of what NOT to do: "Your hemoglobin is low, get it checked again" (this restates the table, belongs nowhere else)
+- Example of what TO do: "Include iron-rich foods like spinach, lentils, and jaggery in daily meals" (this is new actionable knowledge tied to the likely condition)
+
+OTHER RULES:
 - Keep "patient_summary" short -- 2-3 sentences only
 - "test_results" must have one entry per test, using the abnormality detector's status and severity exactly as given -- do not recalculate or override them
-- "do_list" and "dont_list" should have 2-4 short points each, specific to the abnormal results found, not generic filler
-- "lifestyle_tips" should have 1-3 points only, relevant to the specific abnormalities (e.g. low hemoglobin -> iron-rich food tip)
-- If all results are NORMAL, keep do/dont/lifestyle lists short and general wellness-focused
+- "do_list" and "dont_list" should have 2-4 points each, tied to the likely condition -- not generic filler
+- "lifestyle_tips" should have 1-3 points only
+- If all results are NORMAL, keep do/dont/lifestyle lists short and general wellness-focused, and set "likely_condition" to "No significant issues detected"
 - Do not invent information not supported by the text, entities, or abnormality data -- if unsure, write "Not specified"
 - Do not include any text outside the JSON object -- no markdown, no explanation, just valid JSON"""
 
