@@ -4,7 +4,7 @@ __pycache__/
 logs/
 evaluation/test_results/
 saved_models/
-datasets/
+datasets/drug_database/*.csv
 
 biobert-medical-ner/
 results.txt
