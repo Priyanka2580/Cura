@@ -1,0 +1,17 @@
+torch
+torchvision
+transformers
+paddleocr
+paddlepaddle
+google-genai
+seqeval
+rouge-score
+streamlit
+Pillow
+pillow-heif
+pandas
+numpy
+python-dotenv
+requests
+scikit-learn
+tqdm
