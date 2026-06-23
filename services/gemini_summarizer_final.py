@@ -8,9 +8,11 @@ itself happens upstream, in the pipeline -- this module only formats the
 results it's given into the report prompt.
 """
 import os
+import time
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from config import GEMINI_API_KEY_ENV
@@ -23,15 +25,24 @@ GEMINI_MODEL_NAME = "gemini-2.5-flash"
 # and letting the caller move on to the next image.
 REQUEST_TIMEOUT_MS = 60_000
 
+# Gemini returns these as transient APIError.code values (429 = rate limited,
+# 503 = "model currently experiencing high demand") -- both are worth a short
+# retry instead of immediately failing the whole pipeline run for the image.
+RETRYABLE_STATUS_CODES = {429, 503}
+MAX_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 2
+
 PRESCRIPTION_PROMPT = """You are a medical assistant explaining a prescription to a patient in simple, friendly language that anyone can understand.
 
-Raw text extracted from the prescription image via OCR (may contain minor OCR errors):
+Raw text extracted from the prescription image via OCR (may contain minor OCR errors) -- this is the COMPLETE prescription and may contain MORE medicines or details than what appears below in the structured data:
 ---
 {raw_text}
 ---
 
-Structured entities already pulled out by a medical NER model -- trust these over the raw text above for drug names, dosages, strengths, frequency, route and duration:
+Structured entities already pulled out by a medical NER model -- use these for drug names, dosages, strengths, frequency, route and duration when available, but the raw text above may contain additional medicines or details not captured here:
 {entities_block}
+
+IMPORTANT: The structured entities above may be INCOMPLETE -- they only cover what the NER model successfully extracted. The raw text is the full prescription. You MUST scan the raw text yourself and include EVERY medicine mentioned in the prescription, not just the ones present in the structured entities.
 
 Generate a response in valid JSON format only, with this exact structure:
 
@@ -41,12 +52,20 @@ Generate a response in valid JSON format only, with this exact structure:
   "medicines": [
     {{
       "name": "medicine name",
-      "dosage": "e.g. 650mg",
-      "frequency": "e.g. twice daily",
-      "duration": "e.g. 5 days",
+      "dosage": "e.g. 650mg, or 'Not specified' if not mentioned",
+      "frequency": "e.g. twice daily, or 'Not specified' if not mentioned",
+      "duration": "e.g. 5 days, or 'Not specified' if not mentioned",
       "usage": "what this medicine is generally used for, in simple terms",
       "common_side_effects": "2-3 most common side effects, plain language",
-      "alternatives": "1-2 commonly known alternative medicines if widely known, else 'Consult your doctor'"
+      "alternatives": "1-2 commonly known alternative medicines if widely known, else 'Consult your doctor'",
+      "source": "structured_data or raw_text_only"
+    }}
+  ],
+  "recommended_tests": [
+    {{
+      "test_name": "name of any lab test, scan, or follow-up investigation the doctor has advised in this prescription",
+      "purpose": "1 simple sentence on why this test was likely advised, based on the diagnosis/medicines",
+      "timing": "when to get it done if mentioned, e.g. 'after 2 weeks' or 'Not specified'"
     }}
   ],
   "do_list": ["actionable care point NOT already stated in the medicines table -- e.g. specific foods to eat, timing habits, hydration, rest, hygiene related to this condition/medicine class"],
@@ -54,6 +73,18 @@ Generate a response in valid JSON format only, with this exact structure:
   "lifestyle_tips": ["broader lifestyle guidance specific to the diagnosed condition or medicine class -- e.g. exercise, sleep, diet pattern -- NOT a repeat of dosage/timing instructions"],
   "missing_info_note": "state plainly if any critical info like dosage or duration was missing or unclear, else null"
 }}
+
+RULES FOR "medicines" -- THIS IS CRITICAL:
+- Include EVERY single medicine mentioned anywhere in the raw text, even if it's not in the structured entities
+- For medicines covered by the structured entities: use their exact dosage/frequency/duration values, set "source": "structured_data"
+- For medicines found ONLY in raw text (not in structured entities): read the dosage/frequency/duration directly from the raw text yourself, set "source": "raw_text_only". If any of these fields genuinely cannot be found in the raw text either, write "Not specified" for that field
+- Do not skip, drop, or summarize away any medicine found in the raw text -- the patient needs to see all of them
+- If the same medicine appears in both structured entities and raw text, only include it once, using the structured entities version
+
+RULES FOR "recommended_tests":
+- Scan the raw text and entities for ANY mention of a lab test, blood test, scan, X-ray, or follow-up investigation the doctor advised (e.g. "CBC after 2 weeks", "Repeat blood sugar test", "Get an X-ray done")
+- If no such advice is found anywhere in the document, return an empty list []
+- Do not confuse a test name with a medicine name -- only include genuine diagnostic tests/investigations here
 
 CRITICAL RULES ON REPETITION:
 - Do NOT repeat dosage, frequency, timing, or duration instructions in "do_list", "dont_list", or "lifestyle_tips" -- that information belongs ONLY in the "medicines" table
@@ -63,24 +94,25 @@ CRITICAL RULES ON REPETITION:
 
 OTHER RULES:
 - Keep "patient_summary" short -- 2-3 sentences only
-- "medicines" must have one entry per distinct medicine found
 - "do_list" and "dont_list" should have 2-4 points each, specific to the diagnosed condition and medicine class -- not generic filler
 - "lifestyle_tips" should have 1-3 points only
-- Do not invent information not supported by the text or general medical knowledge of the named medicine/condition -- if unsure, write "Not specified"
+- Do not invent specific dosage/frequency/duration numbers not present in the raw text -- only fill in fields you can actually read in the raw text
 - Do not include any text outside the JSON object -- no markdown, no explanation, just valid JSON"""
 
 REPORT_PROMPT = """You are a medical assistant explaining a lab/diagnostic report to a patient in simple, friendly language that anyone can understand.
 
-Raw text extracted from the report image via OCR (may contain minor OCR errors):
+Raw text extracted from the report image via OCR (may contain minor OCR errors) -- this is the COMPLETE report and may contain MORE tests than what appears below in the structured data:
 ---
 {raw_text}
 ---
 
-Structured entities already pulled out by a medical NER model -- trust these over the raw text above for test names, values, units and reference ranges:
+Structured entities already pulled out by a medical NER model -- use these for test names, values, units and reference ranges when available, but the raw text above may contain additional tests not captured here:
 {entities_block}
 
-Abnormality check already computed by a rule-based detector that compared each value against its reference range -- trust this completely for which values are LOW/HIGH/NORMAL and their severity:
+Abnormality check already computed by a rule-based detector for the tests it had complete data for -- trust this completely for the status/severity of those specific tests:
 {abnormality_block}
+
+IMPORTANT: The structured data and abnormality check above may be INCOMPLETE -- they only cover tests where extraction succeeded. The raw text is the full report. You MUST scan the raw text yourself and include EVERY test mentioned in the report, not just the ones with structured abnormality data.
 
 Generate a response in valid JSON format only, with this exact structure:
 
@@ -91,10 +123,19 @@ Generate a response in valid JSON format only, with this exact structure:
     {{
       "test_name": "test name",
       "value": "value with unit",
-      "reference_range": "range as given",
-      "status": "NORMAL or LOW or HIGH",
-      "severity": "MILD, MODERATE, SEVERE, or null if NORMAL",
-      "meaning": "1 simple sentence on what this specific result means for the patient"
+      "reference_range": "range as given in report, or 'Not provided in report' if missing",
+      "status": "NORMAL or LOW or HIGH or UNKNOWN",
+      "severity": "MILD, MODERATE, SEVERE, or null if NORMAL or UNKNOWN",
+      "meaning": "1 simple sentence on what this specific result means for the patient",
+      "source": "structured_data or raw_text_only"
+    }}
+  ],
+  "mentioned_medicines": [
+    {{
+      "name": "medicine name found anywhere in the report text, e.g. in a doctor's note, advice section, or already-prescribed medication list",
+      "usage": "what this medicine is generally used for, in simple terms",
+      "common_side_effects": "2-3 most common side effects, plain language",
+      "alternatives": "1-2 commonly known alternative medicines if widely known, else 'Consult your doctor'"
     }}
   ],
   "overall_condition": "1-2 sentence plain-language statement of the patient's general health picture based on these results",
@@ -105,19 +146,29 @@ Generate a response in valid JSON format only, with this exact structure:
   "missing_info_note": "state plainly if any test was missing data or could not be parsed, else null"
 }}
 
+RULES FOR "test_results" -- THIS IS CRITICAL:
+- Include EVERY single test mentioned anywhere in the raw text, even if it's not in the structured data or abnormality check
+- For tests covered by the abnormality detector: use its exact status and severity, set "source": "structured_data"
+- For tests found ONLY in raw text (not in structured/abnormality data): determine status yourself using standard medical reference ranges for that test if you know them, or if no reference range is given in the report and you don't know a standard range, set status to "UNKNOWN" and reference_range to "Not provided in report". Set "source": "raw_text_only" for these
+- Do not skip, drop, or summarize away any test value found in the raw text -- the patient needs to see all of them
+- If the same test appears in both structured data and raw text, only include it once, using the structured data version
+
+RULES FOR "mentioned_medicines":
+- Scan the raw text and entities for ANY medicine name mentioned anywhere in the report -- this could be in a doctor's remarks, advice section, current medication list, or follow-up notes
+- If no medicine is mentioned anywhere in the document, return an empty list []
+- Do not confuse a test name or instrument name with a medicine name
+
 CRITICAL RULES ON REPETITION:
 - Do NOT repeat test values, statuses, or severities in "do_list", "dont_list", or "lifestyle_tips" -- that information belongs ONLY in the "test_results" table
-- "do_list", "dont_list", and "lifestyle_tips" must contain NEW information -- think of them as condition-specific diet/habit/exercise guidance, not a restatement of which values are high or low
-- Example of what NOT to do: "Your hemoglobin is low, get it checked again" (this restates the table, belongs nowhere else)
-- Example of what TO do: "Include iron-rich foods like spinach, lentils, and jaggery in daily meals" (this is new actionable knowledge tied to the likely condition)
+- Do NOT repeat medicine dosage/usage details in "do_list", "dont_list", or "lifestyle_tips" -- that belongs ONLY in "mentioned_medicines"
+- "do_list", "dont_list", and "lifestyle_tips" must contain NEW information -- think of them as condition-specific diet/habit/exercise guidance, not a restatement of which values are high/low or which medicines are listed
 
 OTHER RULES:
 - Keep "patient_summary" short -- 2-3 sentences only
-- "test_results" must have one entry per test, using the abnormality detector's status and severity exactly as given -- do not recalculate or override them
 - "do_list" and "dont_list" should have 2-4 points each, tied to the likely condition -- not generic filler
 - "lifestyle_tips" should have 1-3 points only
 - If all results are NORMAL, keep do/dont/lifestyle lists short and general wellness-focused, and set "likely_condition" to "No significant issues detected"
-- Do not invent information not supported by the text, entities, or abnormality data -- if unsure, write "Not specified"
+- Do not invent specific numeric values not present in the raw text -- only assess status for values you can actually read in the raw text
 - Do not include any text outside the JSON object -- no markdown, no explanation, just valid JSON"""
 
 PROMPTS_BY_DOC_TYPE = {
@@ -176,14 +227,31 @@ class GeminiSummarizer:
         self.model_name = model_name
 
     def _generate(self, doc_type, prompt):
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-            )
-            return {"summary": response.text, "doc_type": doc_type, "error": None}
-        except Exception as e:
-            return {"summary": None, "doc_type": doc_type, "error": str(e)}
+        last_error = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    # Forces the API itself to return a single JSON object -- no
+                    # markdown fences or stray preamble/postamble text -- instead
+                    # of just asking nicely for JSON in the prompt.
+                    config=genai_types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    ),
+                )
+                return {"summary": response.text, "doc_type": doc_type, "error": None}
+            except Exception as e:
+                last_error = e
+                is_retryable = (
+                    isinstance(e, genai_errors.APIError)
+                    and e.code in RETRYABLE_STATUS_CODES
+                )
+                if is_retryable and attempt < MAX_RETRIES:
+                    time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                break
+        return {"summary": None, "doc_type": doc_type, "error": str(last_error)}
 
     def summarize(self, doc_type, raw_text, entities_by_type,
                   abnormality_results=None, abnormality_summary=None):

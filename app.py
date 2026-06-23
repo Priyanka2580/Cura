@@ -7,6 +7,7 @@ detection, Gemini summarization) happens in the existing Phase 3 pipeline --
 this file is presentation only.
 """
 import json
+import logging
 import os
 import re
 import sys
@@ -16,6 +17,8 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -279,16 +282,18 @@ html, body, p, span, div, label, li {
     margin-top: 0.6rem;
 }
 
-/* small cropped preview thumbnail -- not the full image. Scoped to the
-   upload card's own container (.st-key-thumb-wrap) rather than every
-   [data-testid="stImage"] on the page: Streamlit's click-to-fullscreen
-   view portals the image into a different overlay element, so scoping
-   narrowly here means the fullscreen/zoomed view is unaffected and still
-   opens at full size. */
-.st-key-thumb-wrap [data-testid="stImage"] {
+/* small cropped preview thumbnail -- purely static, no click-to-expand.
+   Streamlit's image toolbar (the fullscreen button) is hidden outright
+   rather than fought with CSS state-detection -- it's the only element with
+   a click handler here, so hiding it removes all interactivity, leaving
+   just a plain small preview. */
+.st-key-thumb-wrap {
     display: flex;
     justify-content: center;
     margin-top: 0.8rem;
+}
+.st-key-thumb-wrap [data-testid="stElementToolbar"] {
+    display: none !important;
 }
 .st-key-thumb-wrap [data-testid="stImage"] img {
     width: 90px !important;
@@ -297,6 +302,8 @@ html, body, p, span, div, label, li {
     border-radius: 14px;
     box-shadow: 0 4px 14px rgba(143, 169, 255, 0.30);
     border: 1px solid var(--cura-border);
+    pointer-events: none;
+    cursor: default;
 }
 
 /* expander (privacy disclaimer) */
@@ -537,6 +544,58 @@ details.cura-faq-item[open] .cura-faq-toggle {
     .block-container { padding-left: 1rem; padding-right: 1rem; }
     .cura-footer-grid { flex-direction: column; }
 }
+
+/* branded "analyzing" loader -- replaces the plain default st.spinner */
+.cura-spinner-card {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    background: var(--cura-card-bg);
+    border: 1px solid var(--cura-border);
+    border-radius: 16px;
+    padding: 1rem 1.3rem;
+    margin: 0.6rem 0;
+    box-shadow: 0 4px 14px rgba(143, 169, 255, 0.20);
+}
+.cura-spinner-ring {
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 3px solid var(--cura-lavender);
+    border-top-color: var(--cura-primary);
+    border-right-color: var(--cura-lilac);
+    animation: cura-spin 0.7s linear infinite;
+}
+@keyframes cura-spin {
+    to { transform: rotate(360deg); }
+}
+.cura-spinner-text {
+    font-weight: 600;
+    color: var(--cura-text);
+    font-size: 0.95rem;
+}
+
+/* "Cura can make mistakes" disclaimer under a summary -- boxed + highlighted */
+.cura-ai-disclaimer {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    margin: 0.7rem 0 0.6rem;
+    padding: 0.75rem 1rem;
+    background: #FFF3DC;
+    border: 1px solid rgba(183, 121, 31, 0.25);
+    border-radius: 12px;
+    color: #8A5E14;
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.45;
+}
+.cura-ai-disclaimer svg {
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+    color: #B7791F;
+}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -648,13 +707,26 @@ analyze_clicked = st.button(
 if analyze_clicked and uploaded_file is not None and consent_given:
     tmp_path = None
     try:
-        with st.spinner("Reading your document ..."):
-            suffix = Path(uploaded_file.name).suffix or ".png"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
+        spinner_placeholder = st.empty()
+        spinner_placeholder.markdown(
+            """
+            <div class="cura-spinner-card">
+                <div class="cura-spinner-ring"></div>
+                <div class="cura-spinner-text">Reading your document ...</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        suffix = Path(uploaded_file.name).suffix or ".png"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded_file.getvalue())
+            tmp_path = tmp.name
 
-            result = run_phase3_pipeline(tmp_path)
+        result = run_phase3_pipeline(tmp_path)
+        spinner_placeholder.empty()
+
+        if result.get("status") in ("failed", "error") and result.get("message"):
+            logger.warning("Pipeline failed for %s: %s", uploaded_file.name, result["message"])
 
         st.session_state.result = result
         st.session_state.analyzed_file_sig = (uploaded_file.name, uploaded_file.size)
@@ -680,6 +752,7 @@ STATUS_BADGE_COLORS = {
     "NORMAL": ("#1F9D55", "#E3F6EA"),
     "LOW": ("#B7791F", "#FFF3DC"),
     "HIGH": ("#C0392B", "#FDE7E5"),
+    "UNKNOWN": ("#5B6680", "#F0E9FF"),
 }
 SEVERITY_BADGE_COLORS = {
     "MILD": ("#B7791F", "#FFF3DC"),
@@ -688,15 +761,50 @@ SEVERITY_BADGE_COLORS = {
 }
 
 
-def _parse_gemini_json(summary_text):
-    """Parse the JSON object Gemini returns, stripping ```json fences if present."""
-    if not summary_text:
-        return None
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", summary_text.strip(), flags=re.IGNORECASE)
+def _try_json_loads(text):
     try:
-        return json.loads(cleaned)
+        return json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+def _fix_common_json_quirks(text):
+    """Normalize smart quotes and drop trailing commas before a retry."""
+    fixed = (
+        text.replace("“", '"').replace("”", '"')
+        .replace("‘", "'").replace("’", "'")
+    )
+    return re.sub(r",\s*([\}\]])", r"\1", fixed)
+
+
+def _parse_gemini_json(summary_text):
+    """Parse the JSON object Gemini returns, tolerating common formatting issues.
+
+    Tries the cleaned response as-is, then just the {...} slice in case Gemini
+    added preamble/postamble text, then a quirk-fixed (trailing commas, smart
+    quotes) version of each -- logging the raw text if every attempt fails so
+    real failures are visible instead of silently dumped to the user.
+    """
+    if not summary_text:
+        return None
+
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", summary_text.strip(), flags=re.IGNORECASE)
+
+    candidates = [cleaned]
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match and match.group(0) != cleaned:
+        candidates.append(match.group(0))
+
+    for candidate in candidates:
+        parsed = _try_json_loads(candidate)
+        if parsed is not None:
+            return parsed
+        parsed = _try_json_loads(_fix_common_json_quirks(candidate))
+        if parsed is not None:
+            return parsed
+
+    logger.warning("Could not parse Gemini JSON response:\n%s", summary_text)
+    return None
 
 
 def _render_badge(label, color_map):
@@ -728,6 +836,76 @@ def _render_common_sections(data):
     if data.get("missing_info_note"):
         st.warning(data["missing_info_note"])
 
+    st.markdown(
+        """
+        <div class="cura-ai-disclaimer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span>Cura can make mistakes. Verify medical information with the original document.</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_medicine_cards(medicines):
+    """Card list shared by prescription "medicines" and report "mentioned_medicines" --
+    the latter has no dosage/frequency/duration, so the meta line is only rendered
+    when at least one of those is present."""
+    for med in medicines:
+        # The prompt now tells Gemini to write "Not specified" per-field rather
+        # than omitting it -- filtered out here since the meta line has no field
+        # labels, so an unlabeled "Not specified" next to real values is confusing.
+        meta_bits = [
+            b for b in (med.get("dosage"), med.get("frequency"), med.get("duration"))
+            if b and b.strip().lower() != "not specified"
+        ]
+        meta_html = (
+            f'<div class="cura-medicine-meta">{escape(" · ".join(meta_bits))}</div>'
+            if meta_bits else ""
+        )
+        detail_rows = "".join(
+            f'<div class="cura-medicine-row"><b>{label}:</b> {escape(str(value))}</div>'
+            for label, value in (
+                ("Used for", med.get("usage")),
+                ("Common side effects", med.get("common_side_effects")),
+                ("Alternatives", med.get("alternatives")),
+            )
+            if value
+        )
+        name_html = escape(str(med.get("name") or "Medicine"))
+        # Built as one unbroken line on purpose: when meta_html is "" (no
+        # dosage/frequency/duration, always true for report-mentioned
+        # medicines), a multi-line template would leave that placeholder
+        # alone on its own line -- a blank line, which terminates the raw
+        # HTML block in markdown parsing and dumps everything after it as
+        # literal text instead of rendering it.
+        st.markdown(
+            f'<div class="cura-medicine-card"><div class="cura-medicine-name">{name_html}</div>'
+            f'{meta_html}{detail_rows}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_recommended_tests(recommended_tests):
+    st.markdown('<div class="cura-summary-section-title">Recommended Tests</div>', unsafe_allow_html=True)
+    rows_html = "".join(
+        f"<tr><td>{escape(str(t.get('test_name', '')))}</td>"
+        f"<td>{escape(str(t.get('purpose', '')))}</td>"
+        f"<td>{escape(str(t.get('timing', '')))}</td></tr>"
+        for t in recommended_tests
+    )
+    st.markdown(
+        '<table class="cura-results-table">'
+        '<thead><tr><th>Test</th><th>Why</th><th>Timing</th></tr></thead>'
+        f'<tbody>{rows_html}</tbody></table>',
+        unsafe_allow_html=True,
+    )
+
 
 def render_prescription_summary(data):
     if data.get("patient_summary"):
@@ -740,27 +918,11 @@ def render_prescription_summary(data):
     medicines = data.get("medicines") or []
     if medicines:
         st.markdown('<div class="cura-summary-section-title">Medicines</div>', unsafe_allow_html=True)
-        for med in medicines:
-            meta_bits = [b for b in (med.get("dosage"), med.get("frequency"), med.get("duration")) if b]
-            detail_rows = "".join(
-                f'<div class="cura-medicine-row"><b>{label}:</b> {escape(str(value))}</div>'
-                for label, value in (
-                    ("Used for", med.get("usage")),
-                    ("Common side effects", med.get("common_side_effects")),
-                    ("Alternatives", med.get("alternatives")),
-                )
-                if value
-            )
-            st.markdown(
-                f"""
-                <div class="cura-medicine-card">
-                    <div class="cura-medicine-name">{escape(str(med.get('name') or 'Medicine'))}</div>
-                    <div class="cura-medicine-meta">{escape(' · '.join(meta_bits))}</div>
-                    {detail_rows}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        _render_medicine_cards(medicines)
+
+    recommended_tests = data.get("recommended_tests") or []
+    if recommended_tests:
+        _render_recommended_tests(recommended_tests)
 
     _render_common_sections(data)
 
@@ -805,6 +967,11 @@ def render_report_summary(data):
             with st.expander("What each result means"):
                 for name, meaning in meanings:
                     st.markdown(f"**{name}:** {meaning}")
+
+    mentioned_medicines = data.get("mentioned_medicines") or []
+    if mentioned_medicines:
+        st.markdown('<div class="cura-summary-section-title">Medicines Mentioned</div>', unsafe_allow_html=True)
+        _render_medicine_cards(mentioned_medicines)
 
     if data.get("overall_condition"):
         st.markdown('<div class="cura-summary-section-title">Overall takeaway</div>', unsafe_allow_html=True)
@@ -851,7 +1018,10 @@ if result is not None:
             st.markdown(f"#### {label}")
             summary_data = _parse_gemini_json(result.get("summary"))
             if summary_data is None:
-                st.markdown(result.get("summary") or "_No summary available._")
+                st.warning(
+                    "We generated a summary but couldn't format it properly. "
+                    "Please try uploading the document again."
+                )
             elif doc_type == "prescription":
                 render_prescription_summary(summary_data)
             else:
@@ -915,7 +1085,7 @@ FAQS = [
     ("Is my uploaded document stored?",
      "No. Your image is processed temporarily to generate the summary and is not stored permanently."),
     ("What file types can I upload?",
-     "Cura accepts JPG, JPEG, PNG and WEBP images of prescriptions or lab reports, up to 20 MB."),
+     "Cura accepts JPG, JPEG, PNG, WEBP and HEIC images of prescriptions or lab reports, up to 20 MB."),
     ("What happens if I upload something that isn't medical?",
      "Cura's classifier detects non-medical uploads and will ask you to upload a valid "
      "prescription or lab report instead."),

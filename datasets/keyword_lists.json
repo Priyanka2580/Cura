@@ -47,7 +47,17 @@
     "duration",
     "prescription",
     "oral",
-    "diagnosis"
+    "diagnosis",
+    "consultant",
+    "registration",
+    "vital",
+    "spo2",
+    "pulse",
+    "bp",
+    "temp",
+    "advised",
+    "specialist",
+    "doctor"
   ],
   "report": [
     "hemoglobin",
@@ -93,6 +103,10 @@
     "pathology",
     "laboratory",
     "radiology",
-    "unit"
+    "unit",
+    "consultant",
+    "registration",
+    "doctor",
+    "collected"
   ]
 }

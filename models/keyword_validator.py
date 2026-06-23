@@ -7,12 +7,18 @@ For each new image:
   3. Confirms or overrides the LMv3 prediction based on scores
 """
 import json
+import re
 from pathlib import Path
 
 # Fraction of class keywords that must match to be eligible for override
 OVERRIDE_SCORE_THRESHOLD = 0.15
 # Candidate score must be this many times higher than the predicted class score
 OVERRIDE_RATIO = 1.5
+# Absolute keyword-hit floor that can override on its own, regardless of the
+# fraction above -- rescues short documents (e.g. a 2-medicine specialist
+# note) that have strong specific evidence but too few hits to clear
+# OVERRIDE_SCORE_THRESHOLD against the full keyword list.
+MIN_OVERRIDE_HITS = 2
 
 
 class KeywordValidator:
@@ -51,13 +57,28 @@ class KeywordValidator:
             return words
         return []
 
-    def _score(self, text_lower, class_name):
-        """Return fraction of class keywords found in text (0.0 – 1.0)."""
+    def _hits(self, text_lower, class_name):
+        """Return (hit_count, total_keywords) for a class's list against text.
+
+        Matches require a non-letter (or string edge) on both sides instead of
+        plain substring containment -- this lets unit abbreviations glued to a
+        number still match (e.g. "mg" in "800mg") while blocking abbreviations
+        from firing inside unrelated longer words (e.g. "od" in "good"/"food",
+        "dr" in "address", "bp" in "kbps").
+        """
         keywords = self.keyword_lists.get(class_name, [])
         if not keywords:
-            return 0.0
-        hits = sum(1 for kw in keywords if kw in text_lower)
-        return hits / len(keywords)
+            return 0, 0
+        hits = sum(
+            1 for kw in keywords
+            if re.search(rf"(?<![A-Za-z]){re.escape(kw)}(?![A-Za-z])", text_lower)
+        )
+        return hits, len(keywords)
+
+    def _score(self, text_lower, class_name):
+        """Return fraction of class keywords found in text (0.0 – 1.0)."""
+        hits, total = self._hits(text_lower, class_name)
+        return round(hits / total, 4) if total else 0.0
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -77,25 +98,37 @@ class KeywordValidator:
             lmv3_prediction  – original LMv3 prediction
             overridden       – True if the prediction was changed
             scores           – keyword match score per class (0-1)
+            hit_counts       – raw keyword hit count per class
             confidence       – original LMv3 confidence
         """
         if words is None:
             words = self._get_words(image_path)
         text_lower = " ".join(str(w).lower() for w in words)
-        scores     = {cls: round(self._score(text_lower, cls), 4)
-                      for cls in self._classes}
+
+        hit_counts = {}
+        scores = {}
+        for cls in self._classes:
+            hits, total = self._hits(text_lower, cls)
+            hit_counts[cls] = hits
+            scores[cls] = round(hits / total, 4) if total else 0.0
 
         final_prediction = lmv3_prediction
         overridden       = False
 
         current_score = scores.get(lmv3_prediction, 0.0)
+        current_hits  = hit_counts.get(lmv3_prediction, 0)
 
-        # Check every other non-non_medical class for a stronger keyword signal
+        # Check every other non-non_medical class for a stronger keyword signal,
+        # either as a fraction of its list or as a larger absolute hit count
+        # (rescues short documents where the fraction never clears the threshold)
         for candidate, candidate_score in scores.items():
             if candidate == lmv3_prediction or candidate == "non_medical":
                 continue
-            if (candidate_score >= OVERRIDE_SCORE_THRESHOLD and
-                    candidate_score >= current_score * OVERRIDE_RATIO):
+            strong_fraction = (candidate_score >= OVERRIDE_SCORE_THRESHOLD and
+                               candidate_score >= current_score * OVERRIDE_RATIO)
+            strong_absolute = (hit_counts[candidate] >= MIN_OVERRIDE_HITS and
+                               hit_counts[candidate] > current_hits)
+            if strong_fraction or strong_absolute:
                 final_prediction = candidate
                 overridden       = True
                 break
@@ -107,7 +140,8 @@ class KeywordValidator:
                 key=lambda c: scores[c],
                 default=None,
             )
-            if best and scores[best] >= OVERRIDE_SCORE_THRESHOLD:
+            if best and (scores[best] >= OVERRIDE_SCORE_THRESHOLD or
+                         hit_counts[best] >= MIN_OVERRIDE_HITS):
                 final_prediction = best
                 overridden       = True
 
@@ -128,5 +162,6 @@ class KeywordValidator:
             "lmv3_prediction":  lmv3_prediction,
             "overridden":       overridden,
             "scores":           scores,
+            "hit_counts":       hit_counts,
             "confidence":       lmv3_confidence,
         }
