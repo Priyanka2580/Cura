@@ -5,6 +5,7 @@ logs/
 evaluation/test_results/
 saved_models/
 datasets/drug_database/*.csv
+datasets/
 
 biobert-medical-ner/
 results.txt
