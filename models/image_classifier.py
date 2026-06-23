@@ -5,9 +5,10 @@ import torch.nn.functional as F
 from pathlib import Path
 from PIL import Image
 
+from huggingface_hub import hf_hub_download
 from transformers import LayoutLMv3Processor, LayoutLMv3ForSequenceClassification
 
-from config import MODEL_CLASSIFIER_PATH, MODEL_INFO_PATH, KEYWORD_LISTS_PATH
+from config import MODEL_CLASSIFIER_REPO, HF_TOKEN_ENV, KEYWORD_LISTS_PATH
 from models.ocr_engine import OCREngine
 from models.keyword_validator import KeywordValidator
 
@@ -29,22 +30,23 @@ class DocumentClassifier:
             use_validator: If True, load the KeywordValidator for second-pass
                            validation. Set False to use LMv3 output only.
         """
-        info_path = Path(MODEL_INFO_PATH)
-        if not info_path.exists():
-            raise FileNotFoundError(f"Model info not found: {MODEL_INFO_PATH}")
+        hf_token = os.environ.get(HF_TOKEN_ENV)
 
+        info_path = hf_hub_download(
+            repo_id=MODEL_CLASSIFIER_REPO, filename="model_info.json", token=hf_token
+        )
         with open(info_path) as f:
             model_info = json.load(f)
 
         self.class_names = model_info["class_names"]
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        model_path = Path(MODEL_CLASSIFIER_PATH)
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model not found: {MODEL_CLASSIFIER_PATH}")
-
-        self.processor = LayoutLMv3Processor.from_pretrained(str(model_path), apply_ocr=False)
-        self.model = LayoutLMv3ForSequenceClassification.from_pretrained(str(model_path))
+        self.processor = LayoutLMv3Processor.from_pretrained(
+            MODEL_CLASSIFIER_REPO, apply_ocr=False, token=hf_token
+        )
+        self.model = LayoutLMv3ForSequenceClassification.from_pretrained(
+            MODEL_CLASSIFIER_REPO, token=hf_token
+        )
         self.model.to(self.device)
         self.model.eval()
 

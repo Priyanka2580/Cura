@@ -6,8 +6,8 @@ import random
 from pathlib import Path
 from PIL import Image, ImageFilter, ImageEnhance
 
-EXTRA_IMAGES_DIR = Path("C:/Users/PRIYANKA/Desktop/MedAi/datasets/Extra Images")
-OUTPUT_DIR       = Path("C:/Users/PRIYANKA/Desktop/MedAi/datasets/training_images/prescription")
+EXTRA_IMAGES_DIR = Path("C:/Users/PRIYANKA/Desktop/Cura/datasets/Extra Images")
+OUTPUT_DIR       = Path("C:/Users/PRIYANKA/Desktop/Cura/datasets/training_images/prescription")
 START_INDEX      = 41
 
 def augment_image(image: Image.Image, base_name: str, output_folder: Path) -> int:

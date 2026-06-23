@@ -10,10 +10,13 @@ from pathlib import Path
 # from evaluation/ instead of the project root).
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
-MODEL_CLASSIFIER_PATH = str(_PROJECT_ROOT / "saved_models/classifier/layoutlmv3-classifier")
-MODEL_INFO_PATH = str(_PROJECT_ROOT / "saved_models/classifier/layoutlmv3-classifier/model_info.json")
-MODEL_CLASSIFIER_INFO_PATH = str(_PROJECT_ROOT / "saved_models/classifier/layoutlmv3-classifier/model_info.json")
-MODEL_NER_PATH = str(_PROJECT_ROOT / "saved_models/ner/biobert-medical-ner-final")
+# Trained weights are too large for git (model.safetensors files exceed
+# GitHub's 100MB limit), so they're hosted on Hugging Face Hub instead of
+# saved_models/ and pulled down via from_pretrained() at runtime. Replace
+# these with your own HF username/repo once you've uploaded the checkpoints.
+MODEL_CLASSIFIER_REPO = "Dpriyanka/cura-layoutlmv3-classifier"
+MODEL_NER_REPO = "Dpriyanka/cura-biobert-ner"
+HF_TOKEN_ENV = "HF_TOKEN"
 TRAINING_IMAGES_PATH = str(_PROJECT_ROOT / "datasets/training_images") + "/"
 NER_DATA_PATH = str(_PROJECT_ROOT / "datasets/ner_data") + "/"
 DRUG_DATABASE_PATH = str(_PROJECT_ROOT / "datasets/drug_database") + "/"

@@ -1,10 +1,11 @@
 import json
+import os
 import torch
 import torch.nn.functional as F
-from pathlib import Path
+from huggingface_hub import hf_hub_download
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 
-from config import MODEL_NER_PATH
+from config import MODEL_NER_REPO, HF_TOKEN_ENV
 
 
 class NERExtractor:
@@ -16,16 +17,15 @@ class NERExtractor:
     """
 
     def __init__(self):
-        """Load tokenizer, model, and label mappings from MODEL_NER_PATH."""
-        model_path = Path(MODEL_NER_PATH)
+        """Load tokenizer, model, and label mappings from MODEL_NER_REPO on the Hub."""
+        hf_token = os.environ.get(HF_TOKEN_ENV)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        self.model = AutoModelForTokenClassification.from_pretrained(str(model_path))
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NER_REPO, token=hf_token)
+        self.model = AutoModelForTokenClassification.from_pretrained(MODEL_NER_REPO, token=hf_token)
 
-        label_file = model_path / "label_mappings.json"
-        if not label_file.exists():
-            raise FileNotFoundError(f"Label mappings not found: {label_file}")
-
+        label_file = hf_hub_download(
+            repo_id=MODEL_NER_REPO, filename="label_mappings.json", token=hf_token
+        )
         with open(label_file, "r") as f:
             label_mappings = json.load(f)
 
